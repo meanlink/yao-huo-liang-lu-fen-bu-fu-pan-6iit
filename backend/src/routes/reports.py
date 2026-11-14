@@ -22,15 +22,25 @@ def create(data:ReportInput,db=Depends(get_db),u=Depends(admin_only)):
 def toggle(id:int,db=Depends(get_db),u=Depends(admin_only)):
     r=db.get(Report,id)
     if not r:raise HTTPException(404,'分发计划不存在')
-    r.enabled=not r.enabled;record(db,u.email,'report.toggle',{'id':id,'enabled':r.enabled});db.commit()
+    r.enabled=not r.enabled
+    if r.enabled:reports.resume(db,r)
+    record(db,u.email,'report.toggle',{'id':id,'enabled':r.enabled});db.commit()
     return report_dict(r)
 @router.get('/deliveries')
 def deliveries(db=Depends(get_db),u=Depends(current_user)):
     return [delivery_dict(d) for d in db.scalars(select(Delivery).order_by(Delivery.id.desc()).limit(100))]
+@router.post('/deliveries/{id}/retry')
+def retry(id:int,db=Depends(get_db),u=Depends(admin_only)):
+    record(db,u.email,'delivery.retry',{'id':id});db.commit()
+    outcome=reports.retry(id)
+    if outcome and outcome['status']=='failed':
+        raise HTTPException(409,f'重试失败：{outcome["error"]}')
+    return {'id':id,'status':outcome['status'] if outcome else 'pending'}
 @router.get('/deliveries/{id}/download')
 def download(id:int,format:str='csv',db=Depends(get_db),u=Depends(current_user)):
     d=db.get(Delivery,id)
     if not d:raise HTTPException(404,'归档不存在')
+    if d.status!='delivered':raise HTTPException(409,'该批次尚未成功分发，请刷新后重试')
     if format not in ('csv','json'):raise HTTPException(422,'支持 CSV 或 JSON')
     filename=d.filename+('.json' if format=='json' else '')
     p=os.path.join(ARTIFACT_DIR,filename)
